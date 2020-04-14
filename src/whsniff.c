@@ -97,7 +97,7 @@ static volatile unsigned int signal_exit = 0;
 //--------------------------------------------
 static uint16_t update_crc_ccitt(uint16_t crc, uint8_t c);
 static uint16_t ieee802154_crc16(uint8_t *tvb, uint32_t offset, uint32_t len);
-
+static time_t timestamp_epoch;
 
 //--------------------------------------------
 static int packet_handler(unsigned char *buf, int cnt)
@@ -109,12 +109,13 @@ static int packet_handler(unsigned char *buf, int cnt)
 	uint16_t usb_len;
 	uint32_t le_ts;
 	uint32_t timestamp;
-	static time_t timestamp_epoch;
 	static uint64_t timestamp_offset;
 	static uint64_t timestamp_tick;
 	uint64_t timestamp_us;
 	uint16_t fcs;
 	uint16_t le_fcs;
+	static uint32_t packet_ts_previous = 0;
+	uint32_t packet_ts = 0;
 
 	if (sizeof(usb_header_type) > cnt)
 		return -1;
@@ -145,14 +146,12 @@ static int packet_handler(unsigned char *buf, int cnt)
 			// CC2531EMK sniffer software: 32-bit value must be divided by 32
 
 			// host timestamp in microseconds
-			timestamp_us = (timestamp_tick + le32toh(usb_data_header->le_timestamp)) / 32;
-
-			if (!timestamp_offset)
-			{
-				timestamp_epoch = time(NULL);
-				timestamp_offset = timestamp_us;
+			packet_ts = le32toh(usb_data_header->le_timestamp);
+			if( packet_ts_previous > packet_ts){ // Detect rollover 
+				timestamp_tick += 0xFFFFFFFF;
 			}
-			timestamp_us -= timestamp_offset;
+			packet_ts_previous = packet_ts;
+			timestamp_us = (timestamp_tick + (uint64_t)packet_ts) / 32;
 
 			// native(host) byte ordering, see pcap_hdr.magic_number
 			pcaprec_hdr.ts_sec = (uint32_t)(timestamp_us / 1000000);
@@ -189,8 +188,9 @@ static int packet_handler(unsigned char *buf, int cnt)
 			if (sizeof(usb_tick_header_type) > cnt)
 				return -1;
 			usb_tick_header = (usb_tick_header_type *)buf;
-			if (usb_tick_header->tick == 0x00)
-				timestamp_tick += 0xFFFFFFFF;
+			if (usb_tick_header->tick == 0x00){
+				// timestamp_tick += 0xFFFFFFFF;
+			}
 			break;
 
 		default:
@@ -354,7 +354,7 @@ int main(int argc, char *argv[])
 
 	fwrite(&pcap_hdr, sizeof(pcap_hdr), 1, stdout);
 	fflush(stdout);
-
+	timestamp_epoch = time(NULL);
 	while (!signal_exit)
 	{
 		res = libusb_bulk_transfer(handle, 0x83, (unsigned char *)&usb_buf, BUF_SIZE, &usb_cnt, 10000);
